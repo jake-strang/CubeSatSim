@@ -71,12 +71,28 @@ float rest;
 
 char sensor_end_flag[] = "_END_FLAG_";
 char sensor_start_flag[] = "_START_FLAG_";
+char packet_end_flag[] = "_END_PACKET_";
+char packet_start_flag[] = "_START_PACKET_";
 bool show_gps = true;  // set to false to not see all  messages
 float flon = 0.0, flat = 0.0, flalt = 0.0;
 void get_gps();
 
 extern void payload_setup();  // sensor extension setup function defined in payload_extension.cpp
 extern void payload_loop();  // sensor extension read function defined in payload_extension.cpp
+
+// Methods for the science payload interface
+extern void initialize_interface();
+extern void interface_send(byte* packet, int length);
+extern void interface_read();
+extern byte hex2byte(char upper, char lower);
+extern void command_test(byte apid, byte* data, byte length);
+void payload_cmd_test();
+
+// enable and tracking for payload interface test cycle
+bool payload_test_enable = 1;
+bool payload_read_enable = 0;
+bool log_loop_enable = 1;
+unsigned long last_test_sclk = 0;
 
 void setup() {
 	
@@ -224,6 +240,7 @@ void setup() {
 #endif	  
   }
   payload_setup();  // sensor extension setup function defined in payload_extension.cpp   
+  initialize_interface();
 }
  
 void loop() {
@@ -253,21 +270,26 @@ void loop() {
         Serial1.print(" ");
         Serial1.print(bme.readHumidity());
 
-        Serial.print("OK BME280 ");
-	temp = bme.readTemperature();       
-        Serial.print(temp);
-        Serial.print(" ");
-        Serial.print(bme.readPressure() / 100.0F);
-        Serial.print(" ");
-        Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
-        Serial.print(" ");
-        Serial.print(bme.readHumidity());
+        if (log_loop_enable) {
+          Serial.print("OK BME280 ");
+	        temp = bme.readTemperature();       
+          Serial.print(temp);
+          Serial.print(" ");
+          Serial.print(bme.readPressure() / 100.0F);
+          Serial.print(" ");
+          Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
+          Serial.print(" ");
+          Serial.print(bme.readHumidity());
+        }
+        
       } else
       {
         Serial1.print(sensor_start_flag);
         Serial1.print("OK BME280 0.0 0.0 0.0 0.0");
 
-        Serial.print("OK BME280 0.0 0.0 0.0 0.0");
+        if (log_loop_enable) {
+          Serial.print("OK BME280 0.0 0.0 0.0 0.0");
+        }
       }
       mpu6050.update();
  
@@ -285,19 +307,21 @@ void loop() {
       Serial1.print(" ");
       Serial1.print(mpu6050.getAccZ());   
 
-      Serial.print(" MPU6050 ");
-      Serial.print(mpu6050.getGyroX());
-      Serial.print(" ");
-      Serial.print(mpu6050.getGyroY());
-      Serial.print(" ");
-      Serial.print(mpu6050.getGyroZ());
+      if (log_loop_enable) {
+        Serial.print(" MPU6050 ");
+        Serial.print(mpu6050.getGyroX());
+        Serial.print(" ");
+        Serial.print(mpu6050.getGyroY());
+        Serial.print(" ");
+        Serial.print(mpu6050.getGyroZ());
  
-      Serial.print(" ");
-      Serial.print(mpu6050.getAccX());   
-      Serial.print(" ");
-      Serial.print(mpu6050.getAccY());   
-      Serial.print(" ");
-      Serial.print(mpu6050.getAccZ());  
+        Serial.print(" ");
+        Serial.print(mpu6050.getAccX());   
+        Serial.print(" ");
+        Serial.print(mpu6050.getAccY());   
+        Serial.print(" ");
+        Serial.print(mpu6050.getAccZ()); 
+      } 
      
       sensorValue = read_analog();
      
@@ -318,19 +342,20 @@ void loop() {
 	    
 //    Serial1.print(" ");
 //    Serial1.println(Sensor2);              
-
-    Serial.print(" GPS ");
-    Serial.print(flat,4);   
-    Serial.print(" ");
-    Serial.print(flon,4);              
-    Serial.print(" ");
-    Serial.print(flalt,2);  	    
+    if (log_loop_enable) {
+      Serial.print(" GPS ");
+      Serial.print(flat,4);   
+      Serial.print(" ");
+      Serial.print(flon,4);              
+      Serial.print(" ");
+      Serial.print(flalt,2);  	    
 
 //    Serial.print(" GPS 0 0 0 TMP ");
-    Serial.print(" TMP ");	    
-    Serial.print(Temp);   
+      Serial.print(" TMP ");	    
+      Serial.print(Temp);   
 //    Serial.print(" ");
-//    Serial.println(Sensor2);     
+//    Serial.println(Sensor2); 
+    }    
      
     float rotation = sqrt(mpu6050.getGyroX()*mpu6050.getGyroX() + mpu6050.getGyroY()*mpu6050.getGyroY() + mpu6050.getGyroZ()*mpu6050.getGyroZ()); 
     float acceleration = sqrt(mpu6050.getAccX()*mpu6050.getAccX() + mpu6050.getAccY()*mpu6050.getAccY() + mpu6050.getAccZ()*mpu6050.getAccZ()); 
@@ -354,11 +379,29 @@ void loop() {
         led_set(blueLED, LOW);
     }
 
-    payload_loop(); // sensor extension read function defined in payload_extension.cpp	  
+    if (log_loop_enable) {
+      Serial.println("");
+    }
+  
+
+    payload_loop(); // sensor extension read function defined in payload_extension.cpp
+
+    if (payload_test_enable) {
+      payload_cmd_test(); // run the payload test if it is enabled
+    }
+    
+
+    if (payload_read_enable) {
+      interface_read(); // Receive packets from each payload
+    }
+    
+
 
 //    Serial1.println(" ");
     Serial1.println(sensor_end_flag);	  
-    Serial.println(" ");
+    if (log_loop_enable) {
+      Serial.println(" ");
+    }
 	  
   }
 
@@ -436,13 +479,66 @@ void loop() {
     }
 #endif
 	  
+  }
+
+  else if (result == 'P') {
+    payload_test_enable = !payload_test_enable;
+  }
+
+  else if (result == 'p') {
+    payload_cmd_test();
+  }
+
+  else if (result == 'h') {
+    interface_read();
+  }
+
+  else if (result == 'H') {
+    payload_read_enable = !payload_read_enable;
+  }
+
+  else if (result == 'l' || result == 'L') {
+    log_loop_enable = !log_loop_enable;
+  }
+
+  // If serial input starts with "0x" convert it into a manual payload command packet for distribution
+  else if (result == '0') {
+    if (Serial.available() && Serial.read() == 'x') {
+
+      // Read 4 bytes for the APID and data length
+      byte header[4];
+      if (Serial.available() >=4) {
+        Serial.readBytes(header, 4);
+      }
+
+      // Parse the APID and data length
+      byte apid = hex2byte(header[0], header[1]);
+      byte length = hex2byte(header[2], header[3]);
+      
+      // Read in the data hex string
+      byte charData[length*2];
+
+      if (Serial.available() >= length*2) {
+        Serial.readBytes(charData, length*2);
+        // Parse the data as a hex string
+        byte data[length];
+        for (int i=0; i<length; i++) {
+          data[i] = hex2byte(charData[i*2], charData[i*2+1]);
+        }
+
+        Serial.println("Dispatching manual command");
+        command_test(apid, data, length);
+      }
+    }
   }  
 //#endif	  	
   }  
 	  
 #if defined (ARDUINO_ARCH_MBED_RP2040) || (ARDUINO_ARCH_RP2040)
-  Serial.print("Squelch: ");	
-  Serial.println(digitalRead(15));
+  if (log_loop_enable) {
+    Serial.print("Squelch: ");
+    Serial.println(digitalRead(15));
+  }
 
   get_gps();
 #else
@@ -656,3 +752,44 @@ void get_gps() {
     ;
 }
 #endif	
+
+std::vector<std::vector<byte>> test_cmds = {
+  // {0x10, 0x02, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0xFF, 0x00},
+  {0x10, 0x12, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0xFF, 0x00},
+  {0x10, 0x42, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0xFF, 0x00},
+  // {0x10, 0x02, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0x00, 0xFF},
+  {0x10, 0x12, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0x00, 0xFF},
+  {0x10, 0x42, 0xc0, 0x00, 0x00, 0x03, 0xFF, 0x00, 0xFF},
+  // {0x10, 0x02, 0xc0, 0x00, 0x00, 0x03, 0x00, 0xFF, 0xFF},
+  {0x10, 0x12, 0xc0, 0x00, 0x00, 0x03, 0x00, 0xFF, 0xFF},
+  {0x10, 0x42, 0xc0, 0x00, 0x00, 0x03, 0x00, 0xFF, 0xFF},
+};
+
+int next_cmd = 0;
+
+// Utility function to cycle through a set of defined outgoing commands to test the payload interface
+void payload_cmd_test() {
+  
+  // If the test loop isn't currently enabled, or it has been less than a second, do nothing
+  if ((millis() - last_test_sclk) < 500) {
+    return;
+  }
+  last_test_sclk = millis();
+
+  // Reset back to the start if we've reached the end of the command list
+  if (next_cmd >= test_cmds.size()) {
+    next_cmd = 0;
+  }
+
+  // Convert the next command to an array
+  byte* packet = new byte[test_cmds[next_cmd].size()];
+
+  std::copy(test_cmds[next_cmd].begin(), test_cmds[next_cmd].end(), packet);
+
+  interface_send(packet, test_cmds[next_cmd].size());
+
+  delete[] packet;
+
+  next_cmd++;
+
+}
